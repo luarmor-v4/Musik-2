@@ -1,0 +1,17 @@
+{
+  "name": "discord-music-bot",
+  "version": "1.0.0",
+  "description": "Discord Music Bot with Lavalink",
+  "main": "src/index.js",
+  "scripts": {
+    "start": "node src/index.js"
+  },
+  "dependencies": {
+    "discord.js": "^14.16.3",
+    "magmastream": "^2.6.0",
+    "dotenv": "^16.4.7"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}
