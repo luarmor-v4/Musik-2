@@ -1,9 +1,6 @@
 // ============================================================
 //                 DISCORD MUSIC BOT - LAVALINK
 // ============================================================
-// Prefix: . (titik)
-// Contoh: .play, .skip, .stop, dll
-// ============================================================
 
 const { Client, GatewayIntentBits, EmbedBuilder, ActivityType } = require('discord.js');
 const { Manager } = require('magmastream');
@@ -50,7 +47,7 @@ const manager = new Manager({
     },
     autoPlay: true,
     playNextOnEnd: true,
-    defaultSearchPlatform: 'youtube',
+    defaultSearchPlatform: 'ytsearch',  // ✅ FIXED: 'youtube' → 'ytsearch'
     restTimeout: 60000
 });
 
