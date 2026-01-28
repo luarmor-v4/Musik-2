@@ -11,13 +11,8 @@ const { createServer } = require('http');
 
 // ==================== KONFIGURASI ====================
 const CONFIG = {
-    // Token bot Discord (dari environment variable)
     token: process.env.DISCORD_TOKEN,
-    
-    // Prefix command
     prefix: '.',
-    
-    // Lavalink server (GRATIS, tidak perlu daftar!)
     lavalink: {
         host: process.env.LAVALINK_HOST || 'lava-v3.ajieblogs.eu.org',
         port: parseInt(process.env.LAVALINK_PORT) || 80,
@@ -44,22 +39,32 @@ const manager = new Manager({
             host: CONFIG.lavalink.host,
             port: CONFIG.lavalink.port,
             password: CONFIG.lavalink.password,
-            secure: CONFIG.lavalink.secure
+            secure: CONFIG.lavalink.secure,
+            retryAmount: 5,
+            retryDelay: 3000
         }
     ],
     send: (id, payload) => {
         const guild = client.guilds.cache.get(id);
         if (guild) guild.shard.send(payload);
-    }
+    },
+    autoPlay: true,
+    playNextOnEnd: true,
+    defaultSearchPlatform: 'youtube',
+    restTimeout: 60000
 });
 
-// ==================== EVENT: LAVALINK CONNECTED ====================
+// ==================== EVENT: LAVALINK ====================
 manager.on('nodeConnect', node => {
     console.log(`✅ [LAVALINK] Connected to "${node.options.name}"`);
 });
 
 manager.on('nodeError', (node, error) => {
     console.error(`❌ [LAVALINK] Error on "${node.options.name}":`, error.message);
+});
+
+manager.on('nodeDisconnect', (node) => {
+    console.log(`⚠️ [LAVALINK] Node "${node.options.name}" disconnected`);
 });
 
 // ==================== EVENT: LAGU MULAI DIPUTAR ====================
@@ -71,26 +76,28 @@ manager.on('trackStart', (player, track) => {
         .setColor(0x1DB954)
         .setTitle('🎵 Now Playing')
         .setDescription(`**[${track.title}](${track.uri})**`)
-        .setThumbnail(track.thumbnail)
+        .setThumbnail(track.thumbnail || null)
         .addFields(
             { name: '⏱️ Duration', value: formatTime(track.duration), inline: true },
             { name: '🎤 Artist', value: track.author || 'Unknown', inline: true }
         )
         .setFooter({ text: `Requested by ${track.requester?.tag || 'Unknown'}` });
     
-    channel.send({ embeds: [embed] });
+    channel.send({ embeds: [embed] }).catch(() => {});
 });
 
 // ==================== EVENT: QUEUE HABIS ====================
 manager.on('queueEnd', (player) => {
     const channel = client.channels.cache.get(player.textChannel);
     if (channel) {
-        channel.send('📭 **Queue selesai!** Leaving voice channel...');
+        channel.send('📭 **Queue selesai!** Leaving voice channel...').catch(() => {});
     }
-    player.destroy();
+    setTimeout(() => {
+        if (player) player.destroy();
+    }, 1000);
 });
 
-// ==================== HELPER: FORMAT WAKTU ====================
+// ==================== HELPER FUNCTIONS ====================
 function formatTime(ms) {
     if (!ms) return '0:00';
     const seconds = Math.floor((ms / 1000) % 60);
@@ -103,7 +110,6 @@ function formatTime(ms) {
     return `${minutes}:${String(seconds).padStart(2, '0')}`;
 }
 
-// ==================== HELPER: BUAT EMBED ====================
 function createEmbed(description, color = 0x5865F2) {
     return new EmbedBuilder().setColor(color).setDescription(description);
 }
@@ -120,19 +126,16 @@ function errorEmbed(msg) {
 
 // .play <judul/url>
 async function cmdPlay(message, args) {
-    // Cek user ada di voice channel
     const voiceChannel = message.member?.voice.channel;
     if (!voiceChannel) {
         return message.reply({ embeds: [errorEmbed('Kamu harus masuk **voice channel** dulu!')] });
     }
 
-    // Cek ada query
     const query = args.join(' ');
     if (!query) {
         return message.reply({ embeds: [errorEmbed('Tulis judul lagu atau URL!\nContoh: `.play never gonna give you up`')] });
     }
 
-    // Buat atau ambil player
     let player = manager.players.get(message.guild.id);
     if (!player) {
         player = manager.create({
@@ -144,29 +147,25 @@ async function cmdPlay(message, args) {
         });
     }
 
-    // Connect ke voice channel
     if (player.state !== 'CONNECTED') {
         player.connect();
     }
 
-    // Tampilkan "typing..."
     await message.channel.sendTyping();
 
     try {
-        // Cari lagu
         const result = await manager.search(query, message.author);
 
-        // Tidak ketemu
-        if (result.loadType === 'NO_MATCHES' || result.loadType === 'LOAD_FAILED') {
+        if (result.loadType === 'NO_MATCHES' || result.loadType === 'LOAD_FAILED' || result.loadType === 'error' || result.loadType === 'empty') {
             return message.reply({ embeds: [errorEmbed('Lagu tidak ditemukan!')] });
         }
 
-        // Jika playlist
-        if (result.loadType === 'PLAYLIST_LOADED') {
-            for (const track of result.tracks) {
+        if (result.loadType === 'PLAYLIST_LOADED' || result.loadType === 'playlist') {
+            const tracks = result.tracks || result.playlist?.tracks || [];
+            for (const track of tracks) {
                 player.queue.add(track);
             }
-            message.reply({ embeds: [successEmbed(`📋 Ditambahkan **${result.tracks.length}** lagu dari playlist **${result.playlist.name}**`)] });
+            message.reply({ embeds: [successEmbed(`📋 Ditambahkan **${tracks.length}** lagu dari playlist!`)] });
             
             if (!player.playing && !player.paused) {
                 player.play();
@@ -174,7 +173,6 @@ async function cmdPlay(message, args) {
             return;
         }
 
-        // Single track
         const track = result.tracks[0];
         player.queue.add(track);
 
@@ -184,7 +182,7 @@ async function cmdPlay(message, args) {
             const embed = new EmbedBuilder()
                 .setColor(0x57F287)
                 .setDescription(`✅ Ditambahkan ke queue: **[${track.title}](${track.uri})**`)
-                .setThumbnail(track.thumbnail);
+                .setThumbnail(track.thumbnail || null);
             message.reply({ embeds: [embed] });
         }
 
@@ -261,7 +259,7 @@ async function cmdQueue(message) {
 
     if (queue.length > 0) {
         desc += '**📋 Antrian:**\n';
-        const tracks = queue.slice(0, 10);
+        const tracks = [...queue].slice(0, 10);
         tracks.forEach((track, i) => {
             desc += `\`${i + 1}.\` [${track.title}](${track.uri}) - \`${formatTime(track.duration)}\`\n`;
         });
@@ -289,18 +287,17 @@ async function cmdNowPlaying(message) {
     }
 
     const track = player.queue.current;
-    const position = player.position;
-    const duration = track.duration;
+    const position = player.position || 0;
+    const duration = track.duration || 0;
 
-    // Progress bar
-    const progress = Math.round((position / duration) * 20);
-    const bar = '▬'.repeat(progress) + '🔘' + '▬'.repeat(20 - progress);
+    const progress = duration > 0 ? Math.round((position / duration) * 20) : 0;
+    const bar = '▬'.repeat(Math.min(progress, 20)) + '🔘' + '▬'.repeat(Math.max(20 - progress, 0));
 
     const embed = new EmbedBuilder()
         .setColor(0x1DB954)
         .setTitle('🎵 Now Playing')
         .setDescription(`**[${track.title}](${track.uri})**\n\n${bar}\n\`${formatTime(position)} / ${formatTime(duration)}\``)
-        .setThumbnail(track.thumbnail)
+        .setThumbnail(track.thumbnail || null)
         .addFields({ name: '🎤 Artist', value: track.author || 'Unknown', inline: true })
         .setFooter({ text: `Requested by ${track.requester?.tag || 'Unknown'}` });
 
@@ -314,7 +311,6 @@ async function cmdVolume(message, args) {
         return message.reply({ embeds: [errorEmbed('Tidak ada lagu yang diputar!')] });
     }
 
-    // Jika tidak ada argument, tampilkan volume saat ini
     if (!args[0]) {
         return message.reply({ embeds: [successEmbed(`🔊 Volume saat ini: **${player.volume}%**`)] });
     }
@@ -335,14 +331,13 @@ async function cmdLoop(message) {
         return message.reply({ embeds: [errorEmbed('Tidak ada lagu yang diputar!')] });
     }
 
-    // Toggle: off → song → queue → off
     if (!player.trackRepeat && !player.queueRepeat) {
         player.setTrackRepeat(true);
-        message.reply({ embeds: [successEmbed('🔂 Loop: **Lagu ini** (repeat 1 lagu)')] });
+        message.reply({ embeds: [successEmbed('🔂 Loop: **Lagu ini**')] });
     } else if (player.trackRepeat) {
         player.setTrackRepeat(false);
         player.setQueueRepeat(true);
-        message.reply({ embeds: [successEmbed('🔁 Loop: **Queue** (repeat semua)')] });
+        message.reply({ embeds: [successEmbed('🔁 Loop: **Queue**')] });
     } else {
         player.setQueueRepeat(false);
         message.reply({ embeds: [successEmbed('➡️ Loop: **Off**')] });
@@ -388,38 +383,19 @@ async function cmdHelp(message) {
     message.reply({ embeds: [embed] });
 }
 
-// ==================== DAFTAR COMMAND & ALIAS ====================
+// ==================== DAFTAR COMMAND ====================
 const commands = {
-    'play': cmdPlay,
-    'p': cmdPlay,
-    
-    'skip': cmdSkip,
-    's': cmdSkip,
-    
-    'stop': cmdStop,
-    'leave': cmdStop,
-    'dc': cmdStop,
-    'disconnect': cmdStop,
-    
+    'play': cmdPlay, 'p': cmdPlay,
+    'skip': cmdSkip, 's': cmdSkip,
+    'stop': cmdStop, 'leave': cmdStop, 'dc': cmdStop, 'disconnect': cmdStop,
     'pause': cmdPause,
     'resume': cmdResume,
-    
-    'queue': cmdQueue,
-    'q': cmdQueue,
-    
-    'nowplaying': cmdNowPlaying,
-    'np': cmdNowPlaying,
-    
-    'volume': cmdVolume,
-    'vol': cmdVolume,
-    
-    'loop': cmdLoop,
-    'repeat': cmdLoop,
-    
+    'queue': cmdQueue, 'q': cmdQueue,
+    'nowplaying': cmdNowPlaying, 'np': cmdNowPlaying,
+    'volume': cmdVolume, 'vol': cmdVolume,
+    'loop': cmdLoop, 'repeat': cmdLoop,
     'shuffle': cmdShuffle,
-    
-    'help': cmdHelp,
-    'h': cmdHelp
+    'help': cmdHelp, 'h': cmdHelp
 };
 
 // ==================== EVENT: BOT READY ====================
@@ -434,29 +410,21 @@ client.once('ready', () => {
     console.log('╚════════════════════════════════════════╝');
     console.log('');
 
-    // Set status bot
     client.user.setActivity(`${CONFIG.prefix}help | 🎵`, { type: ActivityType.Listening });
-
-    // Init Lavalink
     manager.init(client.user.id);
 });
 
-// ==================== EVENT: VOICE STATE UPDATE ====================
+// ==================== EVENT: VOICE STATE ====================
 client.on('raw', (d) => manager.updateVoiceState(d));
 
 // ==================== EVENT: MESSAGE ====================
 client.on('messageCreate', async (message) => {
-    // Ignore bot
     if (message.author.bot) return;
-    
-    // Cek prefix
     if (!message.content.startsWith(CONFIG.prefix)) return;
 
-    // Parse command
     const args = message.content.slice(CONFIG.prefix.length).trim().split(/ +/);
     const cmd = args.shift().toLowerCase();
 
-    // Jalankan command
     const command = commands[cmd];
     if (command) {
         try {
@@ -468,14 +436,13 @@ client.on('messageCreate', async (message) => {
     }
 });
 
-// ==================== HEALTH CHECK SERVER (untuk Render) ====================
+// ==================== HEALTH CHECK SERVER ====================
 const server = createServer((req, res) => {
     res.writeHead(200, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify({
         status: 'online',
         bot: client.user?.tag || 'Starting...',
-        servers: client.guilds?.cache.size || 0,
-        uptime: process.uptime()
+        servers: client.guilds?.cache.size || 0
     }));
 });
 
@@ -486,10 +453,7 @@ server.listen(PORT, () => {
 
 // ==================== START BOT ====================
 if (!CONFIG.token) {
-    console.error('');
     console.error('❌ ERROR: DISCORD_TOKEN tidak ditemukan!');
-    console.error('   Pastikan sudah set di Environment Variables');
-    console.error('');
     process.exit(1);
 }
 
