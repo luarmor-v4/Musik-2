@@ -9,14 +9,40 @@ const { createServer } = require('http');
 // ==================== KONFIGURASI ====================
 const CONFIG = {
     token: process.env.DISCORD_TOKEN,
-    prefix: '.',
-    lavalink: {
-        host: process.env.LAVALINK_HOST || 'lava-v3.ajieblogs.eu.org',
-        port: parseInt(process.env.LAVALINK_PORT) || 80,
-        password: process.env.LAVALINK_PASSWORD || 'https://dsc.gg/ajidevserver',
-        secure: process.env.LAVALINK_SECURE === 'true'
-    }
+    prefix: '.'
 };
+
+// ==================== DAFTAR LAVALINK SERVERS ====================
+// Jika satu down, akan coba yang lain
+const LAVALINK_NODES = [
+    {
+        name: 'Server1',
+        host: 'lava-v3.ajieblogs.eu.org',
+        port: 80,
+        password: 'https://dsc.gg/ajidevserver',
+        secure: false,
+        retryAmount: 3,
+        retryDelay: 3000
+    },
+    {
+        name: 'Server2',
+        host: 'lavalink.jirayu.net',
+        port: 13592,
+        password: 'youshallnotpass',
+        secure: false,
+        retryAmount: 3,
+        retryDelay: 3000
+    },
+    {
+        name: 'Server3',
+        host: 'lavalinkv4.serenetia.com',
+        port: 25269,
+        password: 'Serenetia',
+        secure: false,
+        retryAmount: 3,
+        retryDelay: 3000
+    }
+];
 
 // ==================== BUAT CLIENT DISCORD ====================
 const client = new Client({
@@ -30,30 +56,20 @@ const client = new Client({
 
 // ==================== BUAT LAVALINK MANAGER ====================
 const manager = new Manager({
-    nodes: [
-        {
-            name: 'Main',
-            host: CONFIG.lavalink.host,
-            port: CONFIG.lavalink.port,
-            password: CONFIG.lavalink.password,
-            secure: CONFIG.lavalink.secure,
-            retryAmount: 5,
-            retryDelay: 3000
-        }
-    ],
+    nodes: LAVALINK_NODES,
     send: (id, payload) => {
         const guild = client.guilds.cache.get(id);
         if (guild) guild.shard.send(payload);
     },
     autoPlay: true,
     playNextOnEnd: true,
-    defaultSearchPlatform: 'ytsearch',  // ✅ FIXED: 'youtube' → 'ytsearch'
+    defaultSearchPlatform: 'ytsearch',
     restTimeout: 60000
 });
 
 // ==================== EVENT: LAVALINK ====================
 manager.on('nodeConnect', node => {
-    console.log(`✅ [LAVALINK] Connected to "${node.options.name}"`);
+    console.log(`✅ [LAVALINK] Connected to "${node.options.name}" (${node.options.host})`);
 });
 
 manager.on('nodeError', (node, error) => {
@@ -61,7 +77,7 @@ manager.on('nodeError', (node, error) => {
 });
 
 manager.on('nodeDisconnect', (node) => {
-    console.log(`⚠️ [LAVALINK] Node "${node.options.name}" disconnected`);
+    console.log(`⚠️ [LAVALINK] Node "${node.options.name}" disconnected, trying others...`);
 });
 
 // ==================== EVENT: LAGU MULAI DIPUTAR ====================
@@ -131,6 +147,12 @@ async function cmdPlay(message, args) {
     const query = args.join(' ');
     if (!query) {
         return message.reply({ embeds: [errorEmbed('Tulis judul lagu atau URL!\nContoh: `.play never gonna give you up`')] });
+    }
+
+    // Cek ada node yang connected
+    const connectedNode = manager.nodes.find(n => n.connected);
+    if (!connectedNode) {
+        return message.reply({ embeds: [errorEmbed('Tidak ada server musik yang tersedia! Coba lagi nanti.')] });
     }
 
     let player = manager.players.get(message.guild.id);
@@ -352,6 +374,24 @@ async function cmdShuffle(message) {
     message.reply({ embeds: [successEmbed(`🔀 Queue diacak! (${player.queue.length} lagu)`)] });
 }
 
+// .status - Cek status Lavalink
+async function cmdStatus(message) {
+    const nodes = manager.nodes;
+    let desc = '';
+    
+    nodes.forEach(node => {
+        const status = node.connected ? '🟢 Online' : '🔴 Offline';
+        desc += `**${node.options.name}** (${node.options.host}): ${status}\n`;
+    });
+
+    const embed = new EmbedBuilder()
+        .setColor(0x5865F2)
+        .setTitle('🎵 Lavalink Status')
+        .setDescription(desc);
+
+    message.reply({ embeds: [embed] });
+}
+
 // .help
 async function cmdHelp(message) {
     const embed = new EmbedBuilder()
@@ -373,6 +413,11 @@ async function cmdHelp(message) {
                 name: '📋 Queue',
                 value: '`.queue` - Lihat antrian\n`.np` - Lagu sekarang\n`.loop` - Loop mode\n`.shuffle` - Acak antrian',
                 inline: false
+            },
+            {
+                name: '⚙️ Lainnya',
+                value: '`.status` - Cek status server',
+                inline: false
             }
         )
         .setFooter({ text: '🎵 Powered by Lavalink' });
@@ -392,6 +437,7 @@ const commands = {
     'volume': cmdVolume, 'vol': cmdVolume,
     'loop': cmdLoop, 'repeat': cmdLoop,
     'shuffle': cmdShuffle,
+    'status': cmdStatus,
     'help': cmdHelp, 'h': cmdHelp
 };
 
@@ -435,11 +481,13 @@ client.on('messageCreate', async (message) => {
 
 // ==================== HEALTH CHECK SERVER ====================
 const server = createServer((req, res) => {
+    const connectedNodes = manager.nodes.filter(n => n.connected).length;
     res.writeHead(200, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify({
         status: 'online',
         bot: client.user?.tag || 'Starting...',
-        servers: client.guilds?.cache.size || 0
+        servers: client.guilds?.cache.size || 0,
+        lavalinkNodes: `${connectedNodes}/${manager.nodes.size}`
     }));
 });
 
